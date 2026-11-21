@@ -197,19 +197,6 @@ def heikin_ashi(df):
     return ha
 
 
-TF_MIN = {"1m": 1, "5m": 5, "15m": 15, "30m": 30, "1H": 60}
-
-
-def drop_forming(df, tf):
-    """Remove the last candle if it has not closed yet."""
-    if df is None or df.empty:
-        return df
-    now = pd.Timestamp.now(tz=IST)
-    day_close = df.index[-1].normalize() + pd.Timedelta(hours=15, minutes=30)
-    end = day_close if tf == "1D" else min(df.index[-1] + pd.Timedelta(minutes=TF_MIN[tf]), day_close)
-    return df.iloc[:-1] if end > now else df
-
-
 def signal(df):
     """UP when regular close > Heikin-Ashi close, DOWN when below."""
     if df is None or len(df) < 3:
@@ -231,8 +218,8 @@ def scan_one(headers, symbol, sec_id, tfs):
 # ---------------------------------------------------------------- UI
 st.title("NSE Close vs Heikin-Ashi Scan (Dhan)")
 st.caption(
-    "Latest candle per timeframe. **Up** (BUY signal) = regular close is above the Heikin-Ashi close, "
-    "**Down** (SELL signal) = regular close is below it. 15m, 30m and 1H are built from 5m data."
+    "Latest candle per timeframe. **Up** = regular close is above the Heikin-Ashi close, "
+    "**Down** = regular close is below it. 15m, 30m and 1H are built from 5m data."
 )
 
 client_id, token = get_creds()
@@ -377,54 +364,3 @@ else:
             f.update_xaxes(type="category", nticks=12, rangeslider_visible=False)
             f.update_layout(height=800, showlegend=False, title=f"{sym} - {tf}")
             st.plotly_chart(f, use_container_width=True)
-
-
-# ---------------------------------------------------------------- live monitor
-st.divider()
-st.header("Live monitor (works only while this page stays open)")
-st.caption("Up = BUY signal, Down = SELL signal, shown when a closed candle flips. For alerts with the "
-           "page closed, run alert_worker.py (see README).")
-lm1, lm2, lm3 = st.columns([3, 1, 1])
-mon_syms = lm1.text_input("Symbols (comma separated)", "RELIANCE, TCS, INFY, HDFCBANK, ICICIBANK")
-mon_tf = lm2.selectbox("Timeframe", ["5m", "15m", "30m", "1H", "1D", "1m"], index=1)
-mon_on = lm3.toggle("Monitor on")
-
-
-@st.fragment(run_every=30 if mon_on else None)
-def monitor():
-    if not mon_on:
-        st.info("Switch **Monitor on** to start. It re-checks every 30 seconds.")
-        return
-    if not (client_id and token):
-        st.warning("Enter Dhan credentials first.")
-        return
-    mst = st.session_state.setdefault("mon_state", {})
-    mlog = st.session_state.setdefault("mon_log", [])
-    ids = load_master().set_index("symbol").security_id
-    rows = []
-    for s_ in [x.strip().upper() for x in mon_syms.split(",") if x.strip()]:
-        if s_ not in ids.index:
-            continue
-        df = drop_forming(get_frames(headers, ids[s_], [mon_tf])[mon_tf], mon_tf)
-        sig = signal(df)
-        if sig == "n/a":
-            rows.append({"Symbol": s_, "Signal": "n/a", "Candle": ""})
-            continue
-        t = df.index[-1].isoformat()
-        key = f"{s_}|{mon_tf}"
-        prev = mst.get(key)
-        if prev and prev["t"] != t and prev["sig"] != sig and sig in ("Up", "Down"):
-            action = "BUY" if sig == "Up" else "SELL"
-            msg = f"{action} - {s_} flipped {prev['sig']} -> {sig} on {mon_tf} close"
-            mlog.insert(0, {"Time": datetime.now().strftime("%H:%M:%S"), "Alert": msg})
-            st.toast(msg)
-        mst[key] = {"sig": sig, "t": t}
-        rows.append({"Symbol": s_, "Signal": {"Up": "Up (BUY)", "Down": "Down (SELL)"}.get(sig, sig),
-                     "Candle": df.index[-1].strftime("%d-%b %H:%M")})
-    st.dataframe(pd.DataFrame(rows), use_container_width=True)
-    if mlog:
-        st.subheader("Alerts this session")
-        st.dataframe(pd.DataFrame(mlog[:50]), use_container_width=True)
-
-
-monitor()
